@@ -70,12 +70,28 @@ class HybridEncryptionClient:
             dict: Response from server or None if error
         """
         try:
+            # Create new socket for each request
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((self.host, self.port))
+            
             request_json = json.dumps(request, default=str)
-            self.socket.sendall(request_json.encode('utf-8'))
+            sock.sendall(request_json.encode('utf-8'))
             
-            response_data = self.socket.recv(1024 * 1024)  # Max 1MB per request
-            response = json.loads(response_data.decode('utf-8'))
+            response_data = b''
+            while True:
+                chunk = sock.recv(1024 * 1024)
+                if not chunk:
+                    break
+                response_data += chunk
+                if len(response_data) > 100 * 1024 * 1024:
+                    raise ValueError("Response too large")
+                try:
+                    response = json.loads(response_data.decode('utf-8'))
+                    break
+                except json.JSONDecodeError:
+                    pass
             
+            sock.close()
             return response
         except Exception as e:
             logger.error(f"Request error: {str(e)}")
@@ -92,7 +108,7 @@ class HybridEncryptionClient:
             request = {'action': 'generate_key'}
             response = self._send_request(request)
             
-            if response and response.get('success'):
+            if response and response.get('status') == 'ok':
                 self.session_id = response['session_id']
                 self.key = response['key']
                 self.iv = response['iv']
@@ -101,7 +117,7 @@ class HybridEncryptionClient:
                 print(f"  Session ID: {self.session_id[:16]}...")
                 return True
             else:
-                error = response.get('error', 'Unknown error')
+                error = response.get('message', 'Unknown error') if response else 'No response'
                 logger.error(f"Key generation failed: {error}")
                 print(f"✗ Key generation failed: {error}")
                 return False
@@ -127,11 +143,12 @@ class HybridEncryptionClient:
             
             request = {
                 'action': 'encrypt_text',
-                'plaintext': plaintext
+                'plaintext': plaintext,
+                'session_id': self.session_id
             }
             response = self._send_request(request)
             
-            if response and response.get('success'):
+            if response and response.get('status') == 'ok':
                 ciphertext = response['ciphertext']
                 iv = response['iv']
                 
@@ -150,7 +167,7 @@ class HybridEncryptionClient:
                 print(f"  Encrypted file: {output_file}")
                 return True
             else:
-                error = response.get('error', 'Unknown error')
+                error = response.get('message', 'Unknown error') if response else 'No response'
                 print(f"✗ Encryption failed: {error}")
                 return False
         
@@ -181,11 +198,12 @@ class HybridEncryptionClient:
             request = {
                 'action': 'decrypt_text',
                 'ciphertext': data['ciphertext'],
-                'iv': data['iv']
+                'iv': data['iv'],
+                'session_id': self.session_id
             }
             response = self._send_request(request)
             
-            if response and response.get('success'):
+            if response and response.get('status') == 'ok':
                 plaintext = response['plaintext']
                 
                 # Save to file
@@ -199,7 +217,7 @@ class HybridEncryptionClient:
                 print(f"  Decrypted file: {output_file}")
                 return True
             else:
-                error = response.get('error', 'Unknown error')
+                error = response.get('message', 'Unknown error') if response else 'No response'
                 print(f"✗ Decryption failed: {error}")
                 return False
         
@@ -234,9 +252,9 @@ class HybridEncryptionClient:
             file_size = len(file_data)
             file_type = os.path.splitext(file_path)[1]
             
-            # Check file size (max 100MB)
-            if file_size > 100 * 1024 * 1024:
-                print(f"✗ File too large. Maximum size: 100MB")
+            # Check file size (max 10MB)
+            if file_size > 10 * 1024 * 1024:
+                print(f"✗ File too large. Maximum size: 10MB")
                 return False
             
             # Encode file data
@@ -244,12 +262,14 @@ class HybridEncryptionClient:
             
             request = {
                 'action': 'encrypt_file',
+                'data': encoded_data,
+                'file_type': file_type,
                 'filename': os.path.basename(file_path),
-                'file_data': encoded_data
+                'session_id': self.session_id
             }
             response = self._send_request(request)
             
-            if response and response.get('success'):
+            if response and response.get('status') == 'ok':
                 ciphertext = response['ciphertext']
                 iv = response['iv']
                 metadata = response['metadata']
@@ -271,7 +291,7 @@ class HybridEncryptionClient:
                 print(f"  Encrypted file: {output_file}")
                 return True
             else:
-                error = response.get('error', 'Unknown error')
+                error = response.get('message', 'Unknown error') if response else 'No response'
                 print(f"✗ Encryption failed: {error}")
                 return False
         
@@ -306,13 +326,14 @@ class HybridEncryptionClient:
             
             request = {
                 'action': 'decrypt_file',
-                'ciphertext': data['ciphertext'],
-                'iv': data['iv']
+                'data': data['ciphertext'],
+                'iv': data['iv'],
+                'session_id': self.session_id
             }
             response = self._send_request(request)
             
-            if response and response.get('success'):
-                file_data = base64.b64decode(response['file_data'])
+            if response and response.get('status') == 'ok':
+                file_data = base64.b64decode(response['data'])
                 metadata = data.get('metadata', {})
                 
                 # Determine output file path
@@ -332,7 +353,7 @@ class HybridEncryptionClient:
                 print(f"  Decrypted file: {output_file}")
                 return True
             else:
-                error = response.get('error', 'Unknown error')
+                error = response.get('message', 'Unknown error') if response else 'No response'
                 print(f"✗ Decryption failed: {error}")
                 return False
         
