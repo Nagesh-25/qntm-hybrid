@@ -59,9 +59,22 @@ class HybridEncryptionServer:
     def _handle_client(self, client_socket: socket.socket, client_address: Tuple):
         session_id = None
         try:
-            raw = client_socket.recv(16_384).decode('utf-8')
+            raw = b''
+            while True:
+                chunk = client_socket.recv(1024 * 1024)
+                if not chunk:
+                    break
+                raw += chunk
+                if len(raw) > 100 * 1024 * 1024:
+                    raise ValueError("Request too large")
+                try:
+                    request = json.loads(raw.decode('utf-8'))
+                    break
+                except json.JSONDecodeError:
+                    pass
             request = json.loads(raw)
             action = request.get('action')
+            session_id = request.get('session_id')
 
             if action == 'generate_key':
                 response = self._handle_generate_key(request)
@@ -120,8 +133,8 @@ class HybridEncryptionServer:
             plaintext = request.get('plaintext', '')
             key, iv = self._get_session_material(session_id)
             aes = AESEncryptor(key, iv)
-            ciphertext = aes.encrypt(plaintext.encode('utf-8'))
-            return {'status': 'ok', 'ciphertext': ciphertext.hex()}
+            ciphertext, used_iv = aes.encrypt_text(plaintext)
+            return {'status': 'ok', 'ciphertext': ciphertext.hex(), 'iv': used_iv.hex(), 'length': len(plaintext)}
         except Exception as e:
             logger.error(f"text encryption error: {e}")
             return {'status': 'error', 'message': str(e)}
@@ -129,10 +142,12 @@ class HybridEncryptionServer:
     def _handle_decrypt_text(self, request: Dict, session_id: str) -> Dict:
         try:
             hex_ct = request.get('ciphertext', '')
-            key, iv = self._get_session_material(session_id)
+            iv_hex = request.get('iv', '')
+            key, _ = self._get_session_material(session_id)
+            iv = bytes.fromhex(iv_hex) if iv_hex else _
             aes = AESEncryptor(key, iv)
             # client must send hex string
-            plaintext = aes.decrypt(bytes.fromhex(hex_ct)).decode('utf-8')
+            plaintext = aes.decrypt_text(bytes.fromhex(hex_ct), iv)
             return {'status': 'ok', 'plaintext': plaintext}
         except Exception as e:
             logger.error(f"text decryption error: {e}")
@@ -141,11 +156,19 @@ class HybridEncryptionServer:
     def _handle_encrypt_file(self, request: Dict, session_id: str) -> Dict:
         try:
             b64data = request.get('data', '')
+            file_type = request.get('file_type', '')
+            filename = request.get('filename', '')
             key, iv = self._get_session_material(session_id)
             aes = AESEncryptor(key, iv)
             raw = base64.b64decode(b64data)
-            cipher = aes.encrypt(raw)
-            return {'status': 'ok', 'data': base64.b64encode(cipher).decode('ascii')}
+            cipher, used_iv = aes.encrypt_bytes(raw)
+            metadata = {
+                'filename': filename,
+                'original_size': len(raw),
+                'encrypted_size': len(cipher),
+                'file_type': file_type
+            }
+            return {'status': 'ok', 'ciphertext': base64.b64encode(cipher).decode('ascii'), 'iv': used_iv.hex(), 'metadata': metadata}
         except Exception as e:
             logger.error(f"file encryption error: {e}")
             return {'status': 'error', 'message': str(e)}
@@ -153,16 +176,18 @@ class HybridEncryptionServer:
     def _handle_decrypt_file(self, request: Dict, session_id: str) -> Dict:
         try:
             b64ct = request.get('data', '')
-            key, iv = self._get_session_material(session_id)
+            iv_hex = request.get('iv', '')
+            key, _ = self._get_session_material(session_id)
+            iv = bytes.fromhex(iv_hex) if iv_hex else _
             aes = AESEncryptor(key, iv)
-            plaintext = aes.decrypt(base64.b64decode(b64ct))
+            plaintext = aes.decrypt_bytes(base64.b64decode(b64ct), iv)
             return {'status': 'ok', 'data': base64.b64encode(plaintext).decode('ascii')}
         except Exception as e:
             logger.error(f"file decryption error: {e}")
             return {'status': 'error', 'message': str(e)}
 
 if __name__ == "__main__":
-    server = HybridEncryptionServer(host='0.0.0.0', port=5555, num_qubits=128)
+    server = HybridEncryptionServer(host='0.0.0.0', port=5555, num_qubits=256)
     try:
         server.start()
     except KeyboardInterrupt:
