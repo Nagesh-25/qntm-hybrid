@@ -57,6 +57,32 @@ class AESEncryptor:
         
         return ciphertext, self.iv
     
+    def encrypt_bytes(self, plaintext_bytes: bytes) -> Tuple[bytes, bytes]:
+        """
+        Encrypt raw bytes
+        
+        Args:
+            plaintext_bytes: Bytes to encrypt
+            
+        Returns:
+            tuple: (ciphertext, iv)
+        """
+        # Create cipher
+        cipher = Cipher(
+            algorithms.AES(self.key),
+            modes.CBC(self.iv),
+            backend=self.backend
+        )
+        encryptor = cipher.encryptor()
+        
+        # Add PKCS7 padding
+        padded_plaintext = self._add_padding(plaintext_bytes)
+        
+        # Encrypt
+        ciphertext = encryptor.update(padded_plaintext) + encryptor.finalize()
+        
+        return ciphertext, self.iv
+    
     def decrypt_text(self, ciphertext: bytes, iv: bytes) -> str:
         """
         Decrypt encrypted text
@@ -83,6 +109,33 @@ class AESEncryptor:
         plaintext_bytes = self._remove_padding(padded_plaintext)
         
         return plaintext_bytes.decode('utf-8')
+    
+    def decrypt_bytes(self, ciphertext: bytes, iv: bytes) -> bytes:
+        """
+        Decrypt encrypted bytes
+        
+        Args:
+            ciphertext: Encrypted data
+            iv: Initialization vector used for encryption
+            
+        Returns:
+            bytes: Decrypted bytes
+        """
+        # Create cipher
+        cipher = Cipher(
+            algorithms.AES(self.key),
+            modes.CBC(iv),
+            backend=self.backend
+        )
+        decryptor = cipher.decryptor()
+        
+        # Decrypt
+        padded_plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        
+        # Remove padding
+        plaintext_bytes = self._remove_padding(padded_plaintext)
+        
+        return plaintext_bytes
     
     def encrypt_file(self, file_path: str) -> Tuple[bytes, bytes, dict]:
         """
